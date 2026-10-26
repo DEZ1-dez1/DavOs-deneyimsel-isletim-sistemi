@@ -2,7 +2,7 @@
 
 <div align="center">
 
-<img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=600&size=24&pause=1000&color=00F7FF&center=true&vCenter=true&width=650&lines=DavOS'a+Hoş+Geldiniz;Assembly+ile+Sıfırdan+Geliştirildi;Düşük+Seviye+Sistem+Programlama" alt="DavOS animasyonlu başlık" />
+
 
 <p>
 <strong>Assembly ile sıfırdan geliştirilmiş, x86 tabanlı mini işletim sistemi.</strong>
@@ -130,11 +130,11 @@ halt	Sistemi durdurur.
 💡 Komutların kullanım biçimlerini öğrenmek için DavOS içerisinde help komutunu çalıştırabilirsin.
 🖥️ Sistem Bilgileri
 text
-       ____              ____  _____
-      |  _ \  __ ___   _/ ___||  ___|
-      | | | |/ _` \ \ / /\___ \| |_
-      | |_| | (_| |\ V /  ___) |  _|
-      |____/ \__,_| \_/  |____/|_|
+       ____  
+      |  _ \  
+      | | | |
+      | |_| | 
+      |____/ 
 
       DavOS - Mini İşletim Sistemi
       --------------------------------
@@ -164,8 +164,7 @@ Ayrıntılar için depodaki LICENSE dosyasına göz atabilirsin.
 
 <div align="center">
 
-🚀 DavOS
+ -DavOS
 
-Sıfırdan geliştirildi. Assembly ile güçlendirildi. Merakla şekillendirildi.
 
 </div>
