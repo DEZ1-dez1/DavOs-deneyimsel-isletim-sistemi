@@ -1,12 +1,4 @@
-; DavOS - TEK DOSYA: stage1 + stage2 ayni davos.img icinde
-; Surum: MAJOR.MINOR.PATCH (asagidaki VER_* sabitleri)
-;   MAJOR: uyumsuz/buyuk degisiklik (ornek: 32 bit protected mode'a gecis)
-;   MINOR: geriye uyumlu yeni ozellik (yeni komut, dosya sistemi, heap)
-;   PATCH: sadece hata duzeltme / kucuk iyilestirme
-; Derleme: nasm -f bin davos_v0110.asm -o davos.img
-;          truncate -s 1440k davos.img
-; Limbo'da davos.img'i Floppy (FDA) olarak sec.
-;
+; DavOS - TEK DOSYA: stage1 + stage2
 ; Akis: boot bilgileri -> 3 sn bekle -> ekran temizle -> local_user$ CLI
 
 [bits 16]
