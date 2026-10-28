@@ -1,17 +1,27 @@
-: boot bilgileri -> 3 sn bekle -> ekran temizle -> local_user$ CLI
+; DavOS - TEK DOSYA: stage1 + stage2 ayni davos.img icinde
+; Surum: MAJOR.MINOR.PATCH (asagidaki VER_* sabitleri)
+;   MAJOR: uyumsuz/buyuk degisiklik (ornek: 32 bit protected mode'a gecis)
+;   MINOR: geriye uyumlu yeni ozellik (yeni komut, dosya sistemi, heap)
+;   PATCH: sadece hata duzeltme / kucuk iyilestirme
+; Derleme: nasm -f bin davos_v0110.asm -o davos.img
+;          truncate -s 1440k davos.img
+; Limbo'da davos.img'i Floppy (FDA) olarak sec.
+;
+; Akis: boot bilgileri -> 3 sn bekle -> ekran temizle -> local_user$ CLI
 
 [bits 16]
 [org 0x7C00]
 
 VER_MAJOR    equ 0
-VER_MINOR    equ 9
+VER_MINOR    equ 11
 VER_PATCH    equ 0
 BITMAP_SEG   equ 0x2000          ; fiziksel 0x20000
 BITMAP_BYTES equ 16384
 MAXPAGES     equ 131072          ; 512 MB / 4 KB
-E820BUF      equ 0x9A00
-CMDBUF       equ 0x9B00          ; komut satiri tamponu (64 bayt)
-HEAP_FIRST   equ 10              ; heap: 0xA000'dan
+S2_SECT      equ 24             ; stage2 = 24 sektor (12 KB)
+E820BUF      equ 0xB000
+CMDBUF       equ 0xB100          ; komut satiri tamponu (64 bayt)
+HEAP_FIRST   equ 12              ; heap: 0xC000'dan
 HEAP_END     equ 0x9F            ; heap: 0x9F000'a kadar (haric)
 ERR_UNKNOWN  equ 1
 ERR_USAGE    equ 2
@@ -26,7 +36,11 @@ ERR_ISDIR    equ 10
 ERR_NOTDIR   equ 11
 ERR_EXISTS   equ 12
 ERR_OVERFLOW equ 13
-ERR_MAX      equ 13
+ERR_DISK     equ 14
+ERR_SAMECOLOR equ 15
+ERR_MAX      equ 15
+FS_LBA       equ 32              ; kalici dosya sistemi: disk sektoru 32'den
+FSBUF        equ 0xB200          ; 512 bayt baslik tamponu
 
 ; =====================================================
 ; STAGE 1 (boot sector, 512 bayt)
@@ -41,21 +55,67 @@ start:
     sti
     mov [bootdrv], dl
 
-    mov si, 3
-.retry:
-    xor ax, ax                   ; disk reset
-    mov dl, [bootdrv]
+    mov word [spt], 18           ; geometri: BIOS'tan oku, olmazsa disket varsay
+    mov word [heads], 2
+    mov ah, 0x08
     int 0x13
-    mov ax, 0x0212               ; oku, 18 sektor (9 KB)
-    mov bx, 0x7E00
-    mov cx, 0x0002               ; silindir 0, sektor 2
-    xor dh, dh
-    mov dl, [bootdrv]
-    int 0x13
-    jnc stage2_start
-    dec si
-    jnz .retry
+    jc .geo
+    mov al, cl
+    and ax, 0x003F
+    jz .geo
+    mov [spt], ax
+    mov al, dh
+    xor ah, ah
+    inc ax
+    mov [heads], ax
+.geo:
+    xor ax, ax
+    mov es, ax                   ; AH=08 ES'yi bozabilir
+    mov ax, [spt]
+    mul word [heads]
+    mov [sph], ax                ; sektor/silindir
+    mov word [lba], 1
+    mov word [left], S2_SECT
+    mov word [dst], 0x7E00
 
+.rd:
+    mov ax, [lba]                ; LBA -> CHS
+    xor dx, dx
+    div word [sph]
+    mov ch, al
+    mov cl, ah
+    shl cl, 6
+    mov ax, dx
+    xor dx, dx
+    div word [spt]
+    mov dh, al
+    inc dl
+    or cl, dl
+    mov dl, [bootdrv]
+    mov [chs_cx], cx
+    mov [chs_dx], dx
+    mov byte [tries], 3
+.try:
+    mov cx, [chs_cx]
+    mov dx, [chs_dx]
+    mov bx, [dst]
+    mov ax, 0x0201
+    int 0x13
+    jnc .ok
+    xor ax, ax
+    mov dl, [bootdrv]
+    int 0x13
+    dec byte [tries]
+    jnz .try
+    jmp disk_error
+.ok:
+    add word [dst], 512
+    inc word [lba]
+    dec word [left]
+    jnz .rd
+    jmp stage2_start
+
+disk_error:
     mov si, err_msg
 .p: lodsb
     test al, al
@@ -68,6 +128,15 @@ start:
     jmp .h
 
 bootdrv db 0
+tries   db 0
+spt     dw 0
+heads   dw 0
+sph     dw 0
+lba     dw 0
+left    dw 0
+dst     dw 0
+chs_cx  dw 0
+chs_dx  dw 0
 err_msg db 'Disk error', 0
 
 times 510 - ($ - $$) db 0
@@ -84,6 +153,9 @@ stage2_start:
     mov cx, 7
     mov dx, 0x80
     mov bp, custom_font
+    int 0x10
+    mov ax, 0x1003               ; yanip sonme kapali: 16 arka plan rengi
+    xor bx, bx
     int 0x10
     mov ax, 0xB800
     mov gs, ax
@@ -122,7 +194,7 @@ stage2_start:
 
     ; ---- Kernel icin sayfalari kilitle
     xor edx, edx
-    mov esi, 10
+    mov esi, HEAP_FIRST          ; 0x0000 - 0xBFFF: boot, stage2, tamponlar
     call lock_range
     mov eax, [used_pages]
     mov [pg_low], eax
@@ -133,6 +205,7 @@ stage2_start:
     sub eax, [pg_low]
     mov [pg_map], eax
 
+    call fs_load                 ; diskteki dosya sistemini geri yukle
     call show_ram
 
     mov byte [attr], 0x07
@@ -218,7 +291,9 @@ read_line:
     mov bx, [cursor]
     sub bx, 2
     mov [cursor], bx
-    mov word [gs:bx], 0x0720
+    mov ah, [scr_attr]
+    mov al, ' '
+    mov [gs:bx], ax
     jmp .k
 .enter:
     mov bx, CMDBUF
@@ -1047,7 +1122,7 @@ parse_name:
 .c: mov al, [si]
     test al, al
     jz .end
-    cmp al, ' '
+        cmp al, ' '
     je .end
     cmp cx, 27
     jae .sk
@@ -1130,7 +1205,7 @@ cmd_write:
     mov byte [attr], 0x07
     mov si, msg_written
     call print
-    ret
+    jmp fs_commit
 .dot:
     mov al, ERR_USAGE
     call error
@@ -1215,7 +1290,7 @@ cmd_rm:
     mov byte [attr], 0x07
     mov si, msg_removed
     call print
-    ret
+    jmp fs_commit
 .dir:
     mov [tmpoff], di
     mov ax, [es:di + 30]
@@ -1238,7 +1313,7 @@ cmd_rm:
     mov byte [attr], 0x07
     mov si, msg_removed
     call print
-    ret
+    jmp fs_commit
 .ne:
     mov al, ERR_NOTEMPTY
     call error
@@ -1364,7 +1439,7 @@ cmd_mkdir:
     mov byte [attr], 0x07
     mov si, msg_created
     call print
-    ret
+    jmp fs_commit
 .usage:
     mov al, ERR_USAGE
     call error
@@ -1489,6 +1564,729 @@ path_down:                       ; yola /namebuf ekle
     pop si
     ret
 
+; =====================================================
+; Kalici dosya sistemi: sayfalar ayni fiziksel adreslerle diske yazilir
+; Disk duzeni: sektor FS_LBA = baslik ('DAVF', sayfa sayisi, segment listesi)
+;              ardindan her sayfa icin 8 sektor (4 KB)
+; Acilista ayni adresler yeniden talep edilir, boylece isaretciler gecerli kalir.
+; =====================================================
+; EAX = fiziksel sayfa adresi, heap'te bos ise ayir: CF=1 gecersiz/dolu
+claim_page:
+    push ebx
+    push ecx
+    push edx
+    push es
+    mov edx, eax
+    test edx, 0xFFF
+    jnz .bad
+    shr edx, 12
+    cmp edx, HEAP_FIRST
+    jb .bad
+    cmp edx, HEAP_END
+    jae .bad
+    mov ax, BITMAP_SEG
+    mov es, ax
+    mov ebx, edx
+    shr ebx, 3
+    mov cl, dl
+    and cl, 7
+    mov al, 1
+    shl al, cl
+    test [es:bx], al
+    jnz .bad
+    or [es:bx], al
+    inc dword [used_pages]
+    inc dword [pg_heap]
+    clc
+    jmp .d
+.bad:
+    stc
+.d: pop es
+    pop edx
+    pop ecx
+    pop ebx
+    ret
+
+; AH = 2 oku / 3 yaz, ES:BX = tampon, [rw_lba] = sektor. CF=1 hata
+rw_sector:
+    pusha
+    mov [rw_fn], ah
+    mov [rw_buf], bx
+    mov ax, [rw_lba]
+    xor dx, dx
+    div word [sph]
+    mov ch, al
+    mov cl, ah
+    shl cl, 6
+    mov ax, dx
+    xor dx, dx
+    div word [spt]
+    mov dh, al
+    inc dl
+    or cl, dl
+    mov dl, [bootdrv]
+    mov [chs_cx], cx
+    mov [chs_dx], dx
+    mov byte [tries], 3
+.t: mov cx, [chs_cx]
+    mov dx, [chs_dx]
+    mov bx, [rw_buf]
+    mov ah, [rw_fn]
+    mov al, 1
+    int 0x13
+    jnc .ok
+    xor ax, ax
+    mov dl, [bootdrv]
+    int 0x13
+    dec byte [tries]
+    jnz .t
+    popa
+    stc
+    ret
+.ok:
+    popa
+    clc
+    ret
+
+; AH = 2/3, ES = sayfa segmenti, [rw_lba] = ilk sektor (8 sektor, [rw_lba] ilerler)
+rw_page:
+    push bx
+    push cx
+    xor bx, bx
+    mov cx, 8
+.l: call rw_sector
+    jc .e
+    inc word [rw_lba]
+    add bx, 512
+    loop .l
+    clc
+.e: pop cx
+    pop bx
+    ret
+
+; Agaci gez, tum sayfalari diske yaz. CF=1 hata
+fs_save:
+    pusha
+    push es
+    cmp word [fs_dir_seg], 0
+    je .ok
+    mov word [pl_n], 1
+    mov word [pl_i], 0
+    mov ax, [fs_dir_seg]
+    mov [pl_seg], ax
+    mov byte [pl_typ], 1
+.scan:
+    mov bx, [pl_i]
+    cmp bx, [pl_n]
+    jae .hdr
+    cmp byte [pl_typ + bx], 1
+    jne .nxt
+    shl bx, 1
+    mov ax, [pl_seg + bx]
+    mov es, ax
+    xor di, di
+    mov cx, 128
+.e: cmp byte [es:di], 0
+    je .en
+    cmp byte [es:di], '.'
+    je .en
+    mov bx, [pl_n]
+    cmp bx, 252
+    jae .err
+    mov ax, [es:di + 30]
+    mov dl, 0
+    cmp word [es:di + 28], 0xFFFF
+    jne .t0
+    mov dl, 1
+.t0:
+    mov [pl_typ + bx], dl
+    shl bx, 1
+    mov [pl_seg + bx], ax
+    inc word [pl_n]
+.en:
+    add di, 32
+    dec cx
+    jnz .e
+.nxt:
+    inc word [pl_i]
+    jmp .scan
+.hdr:
+    xor ax, ax
+    mov es, ax
+    mov di, FSBUF
+    mov cx, 256
+    cld
+    rep stosw
+    mov dword [FSBUF], 'DAVF'
+    mov ax, [pl_n]
+    mov [FSBUF + 4], ax
+    mov si, pl_seg
+    mov di, FSBUF + 6
+    mov cx, [pl_n]
+    rep movsw
+    mov word [rw_lba], FS_LBA
+    mov bx, FSBUF
+    mov ah, 3
+    call rw_sector
+    jc .err
+    mov word [rw_lba], FS_LBA + 1
+    mov word [pl_i], 0
+.wp:
+    mov bx, [pl_i]
+    cmp bx, [pl_n]
+    jae .ok
+    shl bx, 1
+    mov ax, [pl_seg + bx]
+    mov es, ax
+    mov ah, 3
+    call rw_page
+    jc .err
+    inc word [pl_i]
+    jmp .wp
+.ok:
+    pop es
+    popa
+    ret
+.err:
+    pop es
+    popa
+    stc
+    ret
+
+fs_commit:                       ; degisiklikten sonra diske kaydet
+    call fs_save
+    jnc .ok
+    mov al, ERR_DISK
+    call error
+.ok:
+    ret
+
+; Acilista: diskteki dosya sistemini ayni adreslere geri yukle
+fs_load:
+    pusha
+    push es
+    xor ax, ax
+    mov es, ax
+    mov word [rw_lba], FS_LBA
+    mov bx, FSBUF
+    mov ah, 2
+    call rw_sector
+    jc .none
+    cmp dword [FSBUF], 'DAVF'
+    jne .none
+    mov cx, [FSBUF + 4]
+    test cx, cx
+    jz .none
+    cmp cx, 252
+    ja .none
+    mov [pl_n], cx
+    mov si, FSBUF + 6
+    mov di, pl_seg
+    cld
+    rep movsw
+    xor bx, bx
+.cl:
+    cmp bx, [pl_n]
+    jae .rd
+    mov si, bx
+    shl si, 1
+    movzx eax, word [pl_seg + si]
+    shl eax, 4
+    call claim_page
+    jc .fail
+    inc bx
+    jmp .cl
+.fail:
+    mov [rel_n], bx
+    jmp .rel
+.rd:
+    mov word [rw_lba], FS_LBA + 1
+    xor bx, bx
+.rp:
+    cmp bx, [pl_n]
+    jae .done
+    mov si, bx
+    shl si, 1
+    mov ax, [pl_seg + si]
+    mov es, ax
+    mov ah, 2
+    call rw_page
+    jc .rerr
+    inc bx
+    jmp .rp
+.rerr:
+    mov ax, [pl_n]
+    mov [rel_n], ax
+.rel:
+    xor bx, bx
+.rl:
+    cmp bx, [rel_n]
+    jae .none
+    mov si, bx
+    shl si, 1
+    movzx eax, word [pl_seg + si]
+    shl eax, 4
+    call free_page
+    inc bx
+    jmp .rl
+.done:
+    mov ax, [pl_seg]
+    mov [fs_dir_seg], ax
+    mov [cur_dir_seg], ax
+.none:
+    pop es
+    popa
+    ret
+
+; =====================================================
+; color: harf = arka plan (a-p), rakam = yazi rengi (0-9)
+;   color a2   arka plan a, yazi 2     color a    sadece arka plan
+;   color 5    sadece yazi             color reset  varsayilan (a7)
+; a=siyah b=mavi c=yesil d=camgobegi e=kirmizi f=mor g=kahve h=acik gri
+; i=koyu gri j=acik mavi k=acik yesil l=acik camgobegi m=acik kirmizi
+; n=acik mor o=sari p=beyaz      0=siyah 1=mavi 2=yesil 3=camgobegi 4=kirmizi
+; 5=mor 6=kahve 7=acik gri 8=koyu gri 9=acik mavi
+; =====================================================
+cmd_color:
+    mov si, [argptr]
+    cmp byte [si], 0
+    je .legend
+    mov di, s_reset
+    call streq
+    jne .parse
+    mov byte [new_bg], 0
+    mov byte [new_fg], 7
+    jmp .set
+.parse:
+    mov byte [new_bg], 0xFF
+    mov byte [new_fg], 0xFF
+    mov al, [si]
+    or al, 0x20
+    cmp al, 'a'
+    jb .dg
+    cmp al, 'p'
+    ja .bad
+    sub al, 'a'
+    mov [new_bg], al
+    inc si
+.dg:
+    mov al, [si]
+    sub al, '0'
+    cmp al, 9
+    ja .chk
+    mov [new_fg], al
+    inc si
+.chk:
+    cmp byte [si], 0
+    jne .bad
+    cmp byte [new_bg], 0xFF
+    jne .set
+    cmp byte [new_fg], 0xFF
+    je .bad
+.set:
+    mov al, [bg_color]
+    mov [old_bg], al
+    mov al, [fg_color]
+    mov [old_fg], al
+    mov al, [new_bg]
+    cmp al, 0xFF
+    je .k1
+    mov [bg_color], al
+.k1:
+    mov al, [new_fg]
+    cmp al, 0xFF
+    je .k2
+    mov [fg_color], al
+.k2:
+    mov al, [bg_color]
+    cmp al, [fg_color]
+    jne .ok
+    mov al, [old_bg]
+    mov [bg_color], al
+    mov al, [old_fg]
+    mov [fg_color], al
+    mov al, ERR_SAMECOLOR
+    call error
+    ret
+.ok:
+    call apply_colors
+    ret
+.bad:
+    mov al, ERR_USAGE
+    call error
+    mov si, msg_usage_color
+    call print
+    ret
+.legend:
+    mov al, [bg_hi]
+    mov [sv_bg], al
+    mov al, [fg_color]
+    mov [sv_fg], al
+    mov byte [bg_hi], 0
+    mov byte [fg_color], 7
+    mov byte [attr], 0x07
+    mov si, msg_col_bg
+    call print
+    xor bx, bx
+.lb:
+    cmp bx, 16
+    jae .ld
+    mov al, bl
+    shl al, 4
+    mov ah, 0x0F
+    cmp bl, 7
+    jb .tx
+    xor ah, ah
+.tx:
+    or al, ah
+    mov [attr], al
+    mov al, 'a'
+    add al, bl
+    call putc
+    mov byte [attr], 0x07
+    mov al, ' '
+    call putc
+    inc bx
+    jmp .lb
+.ld:
+    mov al, 10
+    call putc
+    mov al, [sv_bg]
+    mov [bg_hi], al
+    mov byte [attr], 0x07
+    mov si, msg_col_fg
+    call print
+    xor bx, bx
+.dl:
+    cmp bx, 10
+    jae .dd
+    mov al, bl
+    test al, al
+    jnz .d1
+    mov al, 0x70
+.d1:
+    mov [attr], al
+    mov al, '0'
+    add al, bl
+    call putc
+    mov byte [attr], 0x07
+    mov al, ' '
+    call putc
+    inc bx
+    jmp .dl
+.dd:
+    mov al, 10
+    call putc
+    mov al, [sv_fg]
+    mov [fg_color], al
+    mov byte [attr], 0x07
+    mov si, msg_col_ex
+    call print
+    ret
+
+apply_colors:                    ; ekrandaki eski renkleri yenileriyle degistir
+    pusha
+    xor di, di
+    mov cx, 2000
+.l: mov ax, [gs:di]
+    mov bl, ah
+    mov bh, bl
+    shr bh, 4
+    and bl, 0x0F
+    cmp bh, [old_bg]
+    jne .b
+    mov bh, [bg_color]
+.b: cmp bl, [old_fg]
+    jne .f
+    mov bl, [fg_color]
+.f: shl bh, 4
+    or bh, bl
+    mov ah, bh
+    mov [gs:di], ax
+    add di, 2
+    loop .l
+    mov al, [bg_color]
+    shl al, 4
+    mov [bg_hi], al
+    or al, [fg_color]
+    mov [scr_attr], al
+    popa
+    ret
+
+; =====================================================
+; XOX: xox = bilgisayara karsi (sen X), xox 2 = iki kisilik
+; =====================================================
+cmd_xox:
+    mov byte [xo_mode], 1
+    mov si, [argptr]
+    cmp byte [si], '2'
+    jne .new
+    mov byte [xo_mode], 2
+.new:
+    xor ax, ax
+    mov es, ax
+    mov di, xox_b
+    mov cx, 9
+    cld
+    rep stosb
+    mov byte [xo_turn], 1
+.turn:
+    call xox_draw
+    call xox_check
+    test al, al
+    jnz .over
+    mov byte [attr], 0x07
+    mov si, msg_xo_turn
+    call print
+    cmp byte [xo_turn], 1
+    jne .po
+    mov byte [attr], 0x0C
+    mov al, 'X'
+    jmp .pc
+.po:
+    mov byte [attr], 0x0E
+    mov al, 'O'
+.pc:
+    call putc
+    mov byte [attr], 0x07
+    mov si, msg_xo_help
+    call print
+    cmp byte [xo_mode], 1
+    jne .key
+    cmp byte [xo_turn], 2
+    jne .key
+    mov dl, 2                    ; bilgisayar (O) hamlesi
+    xor dh, dh
+    call xox_mm
+    movzx bx, byte [mm_move]
+    mov byte [xox_b + bx], 2
+    mov byte [xo_turn], 1
+    jmp .turn
+.key:
+    xor ah, ah
+    int 0x16
+    cmp al, 'q'
+    je .quit
+    cmp al, 'Q'
+    je .quit
+    cmp al, 27
+    je .quit
+    sub al, '1'
+    cmp al, 8
+    ja .key
+    movzx bx, al
+    cmp byte [xox_b + bx], 0
+    jne .key
+    mov al, [xo_turn]
+    mov [xox_b + bx], al
+    xor byte [xo_turn], 3
+    jmp .turn
+.over:
+    mov dl, al                   ; 1 = X, 2 = O, 3 = berabere
+    mov byte [attr], 0x0A
+    cmp dl, 3
+    je .draw
+    cmp byte [xo_mode], 1
+    jne .two
+    mov si, msg_xo_you
+    cmp dl, 1
+    je .say
+    mov si, msg_xo_cpu
+    mov byte [attr], 0x0C
+    jmp .say
+.two:
+    mov si, msg_xo_xw
+    cmp dl, 1
+    je .say
+    mov si, msg_xo_ow
+    jmp .say
+.draw:
+    mov si, msg_xo_draw
+    mov byte [attr], 0x0E
+.say:
+    call print
+    mov byte [attr], 0x07
+    mov si, msg_xo_again
+    call print
+    xor ah, ah
+    int 0x16
+    cmp al, 'q'
+    je .quit
+    cmp al, 'Q'
+    je .quit
+    cmp al, 27
+    je .quit
+    jmp .new
+.quit:
+    call clear_screen
+    ret
+
+xox_draw:
+    call clear_screen
+    mov byte [attr], 0x0E
+    mov si, msg_xo_title
+    call print
+    xor bx, bx
+.row:
+    cmp bx, 9
+    jae .done
+    mov byte [attr], 0x07
+    mov si, msg_xo_ind
+    call print
+    call xox_cell
+    mov al, '|'
+    call putc
+    inc bx
+    call xox_cell
+    mov al, '|'
+    call putc
+    inc bx
+    call xox_cell
+    inc bx
+    mov al, 10
+    call putc
+    cmp bx, 9
+    jae .done
+    mov si, msg_xo_sep
+    call print
+    jmp .row
+.done:
+    ret
+
+xox_cell:                        ; BX = hucre -> " X " renkli
+    push ax
+    mov byte [attr], 0x07
+    mov al, ' '
+    call putc
+    mov al, [xox_b + bx]
+    cmp al, 1
+    je .x
+    cmp al, 2
+    je .o
+    mov byte [attr], 0x08
+    mov al, '1'
+    add al, bl
+    jmp .p
+.x: mov byte [attr], 0x0C
+    mov al, 'X'
+    jmp .p
+.o: mov byte [attr], 0x0E
+    mov al, 'O'
+.p: call putc
+    mov byte [attr], 0x07
+    mov al, ' '
+    call putc
+    pop ax
+    ret
+
+; AL = 0 devam, 1 X kazandi, 2 O kazandi, 3 berabere
+xox_check:
+    push bx
+    push cx
+    push si
+    mov si, win_tbl
+    mov cx, 8
+.l: movzx bx, byte [si]
+    mov al, [xox_b + bx]
+    test al, al
+    jz .n
+    movzx bx, byte [si + 1]
+    cmp al, [xox_b + bx]
+    jne .n
+    movzx bx, byte [si + 2]
+    cmp al, [xox_b + bx]
+    jne .n
+    jmp .ret
+.n: add si, 3
+    loop .l
+    xor bx, bx
+.d: cmp bx, 9
+    jae .dr
+    cmp byte [xox_b + bx], 0
+    je .none
+    inc bx
+    jmp .d
+.dr:
+    mov al, 3
+    jmp .ret
+.none:
+    xor al, al
+.ret:
+    pop si
+    pop cx
+    pop bx
+    ret
+
+; Minimax: DL = sira (1 X, 2 O), DH = derinlik -> AX = skor (O lehine +)
+; en iyi hamle [mm_move] (derinlik 0'da)
+xox_mm:
+    push bx
+    push cx
+    push dx
+    call xox_check
+    cmp al, 2
+    je .ow
+    cmp al, 1
+    je .xw
+    cmp al, 3
+    je .dr
+    mov cx, -100
+    cmp dl, 2
+    je .m
+    mov cx, 100
+.m: xor bx, bx
+.c: cmp bx, 9
+    jae .done
+    cmp byte [xox_b + bx], 0
+    jne .nx
+    mov [xox_b + bx], dl
+    push dx
+    mov al, 3
+    sub al, dl
+    mov dl, al
+    inc dh
+    call xox_mm
+    pop dx
+    mov byte [xox_b + bx], 0
+    cmp dl, 2
+    je .max
+    cmp ax, cx
+    jge .nx
+    mov cx, ax
+    jmp .nx
+.max:
+    cmp ax, cx
+    jle .nx
+    mov cx, ax
+    test dh, dh
+    jnz .nx
+    mov [mm_move], bl
+.nx:
+    inc bx
+    jmp .c
+.done:
+    mov ax, cx
+    jmp .ret
+.ow:
+    mov al, dh
+    xor ah, ah
+    mov bx, 10
+    sub bx, ax
+    mov ax, bx
+    jmp .ret
+.xw:
+    mov al, dh
+    xor ah, ah
+    sub ax, 10
+    jmp .ret
+.dr:
+    xor ax, ax
+.ret:
+    pop dx
+    pop cx
+    pop bx
+    ret
+
 ; ---- Numarali hata: AL = hata kodu -> "Error N: aciklama"
 error:
     pushad
@@ -1508,7 +2306,7 @@ error:
     popad
     ret
 
-cmd_err:                         ; son hata kodu
+cmd_err:               ; son hata kodu
     mov byte [attr], 0x07
     mov si, msg_lasterr
     call print
@@ -1979,7 +2777,8 @@ clear_screen:
     mov es, ax
     xor di, di
     mov cx, 2000
-    mov ax, 0x0720
+    mov ah, [scr_attr]
+    mov al, ' '
     cld
     rep stosw
     mov word [cursor], 0
@@ -2176,6 +2975,16 @@ putc:                            ; AL = karakter, [attr] rengi
     cmp al, 10
     je .nl
     mov ah, [attr]
+    test ah, 0xF0                ; ozel arka plani olan renk aynen yazilir
+    jnz .st
+    mov bl, ah
+    cmp bl, 7                    ; varsayilan metin rengi -> secilen metin rengi
+    jne .nb
+    mov bl, [fg_color]
+.nb:
+    mov ah, [bg_hi]              ; secilen arka plan
+    or ah, bl
+.st:
     mov [gs:di], ax
     add di, 2
     jmp .chk
@@ -2207,6 +3016,8 @@ scroll:                          ; ekrani 1 satir yukari kaydir
     push di
     push cx
     push ax
+    push dx
+    mov dl, [scr_attr]
     mov ax, 0xB800
     mov ds, ax
     mov es, ax
@@ -2215,10 +3026,12 @@ scroll:                          ; ekrani 1 satir yukari kaydir
     mov cx, 1920
     cld
     rep movsw
-    mov ax, 0x0720
+    mov ah, dl
+    mov al, ' '
     mov cx, 80
     mov di, 3840
     rep stosw
+    pop dx
     pop ax
     pop cx
     pop di
@@ -2242,6 +3055,21 @@ msg_dollar db '$ ', 0
 msg_ver_pre  db 'DavOS v', 0
 msg_calc_prompt db 'hesap> ', 0
 msg_eq      db '= ', 0
+msg_col_bg  db 'Arka plan: ', 0
+msg_col_fg  db 'Yazi:      ', 0
+msg_col_ex  db 'Ornek: color a2 | color a | color 5 | color reset', 10, 0
+msg_usage_color db 'Kullanim: color a2 | color a | color 5 | color reset', 10, 0
+msg_xo_title db 'XOX', 10, 10, 0
+msg_xo_ind  db '    ', 0
+msg_xo_sep  db '    ---+---+---', 10, 0
+msg_xo_turn db 10, 'Sira: ', 0
+msg_xo_help db ' - hucre sec (1-9), q = cik', 10, 0
+msg_xo_you  db 10, 'Kazandin!', 10, 0
+msg_xo_cpu  db 10, 'Bilgisayar kazandi.', 10, 0
+msg_xo_xw   db 10, 'X kazandi!', 10, 0
+msg_xo_ow   db 10, 'O kazandi!', 10, 0
+msg_xo_draw db 10, 'Berabere.', 10, 0
+msg_xo_again db 'Tekrar: bir tusa bas, q = cik', 10, 0
 msg_calc_info db 'Hesap: + - * x / % ( ) [ ] ! kesir . ,   Bos satir = cikis', 10, 0
 msg_ver_tail db ' (x86 16-bit real mode)', 10, 0
 msg_halt   db 'Sistem durduruldu.', 10, 0
@@ -2251,6 +3079,9 @@ s_help     db 'help', 0
 s_q        db '?', 0
 s_sym      db 'sym', 0
 s_hesap    db 'hesap', 0
+s_xox      db 'xox', 0
+s_color    db 'color', 0
+s_reset    db 'reset', 0
 s_mkdir    db 'mkdir', 0
 s_cd       db 'cd', 0
 s_pwd      db 'pwd', 0
@@ -2277,6 +3108,8 @@ cmd_table:
     dw s_q,      cmd_help
     dw s_sym,    cmd_sym
     dw s_hesap,  cmd_calc
+    dw s_xox,    cmd_xox
+    dw s_color,  cmd_color
     dw s_mkdir,  cmd_mkdir
     dw s_cd,     cmd_cd
     dw s_pwd,    cmd_pwd
@@ -2319,6 +3152,8 @@ help_table:
     db '  err      ', 0, '- Son hata kodunu gosterir', 10, 0
     db '  errors   ', 0, '- Tum hata kodlarini listeler', 10, 0
     db '  hesap    ', 0, '- Hesap: + - * / % ( ) ! kesir (bos = cikis)', 10, 0
+    db '  xox      ', 0, '- XOX oyunu (xox 2 = iki kisilik)', 10, 0
+    db '  color    ', 0, '- color a2 | a | 5 | reset (harf=arka)', 10, 0
     db '  sym      ', 0, '- :isim: veya ;isim; ile semboller', 10, 0
     db '  `        ', 0, '- Sembol paleti: 1-9,0,A-Z ile sec', 10, 0
     db '  reboot   ', 0, '- Yeniden baslatir', 10, 0
@@ -2398,7 +3233,9 @@ e10 db 'Bu bir klasor', 10, 0
 e11 db 'Klasor degil', 10, 0
 e12 db 'Zaten var', 10, 0
 e13 db 'Sonuc cok buyuk (1e18 ve uzeri)', 10, 0
-err_table dw e0, e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12, e13
+e14 db 'Disk yazma hatasi (disk salt okunur olabilir)', 10, 0
+e15 db 'Arka plan ve yazi rengi ayni olamaz', 10, 0
+err_table dw e0, e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12, e13, e14, e15
 last_err    db 0
 msg_heapinfo db 'Heap sayfalari: ', 0
 msg_sayfa   db ' sayfa = ', 0
@@ -2408,6 +3245,21 @@ hv_buf      times 12 db 0
 cpu_buf     times 48 db 0
             db 0
 boot_ticks  dd 0
+bg_color    db 0
+fg_color    db 7
+bg_hi       db 0
+scr_attr    db 7
+old_bg      db 0
+old_fg      db 7
+new_bg      db 0
+new_fg      db 0
+sv_bg       db 0
+sv_fg       db 0
+xo_turn     db 1
+xo_mode     db 1
+mm_move     db 0
+xox_b       times 9 db 0
+win_tbl     db 0,1,2, 3,4,5, 6,7,8, 0,3,6, 1,4,7, 2,5,8, 0,4,8, 2,4,6
 calc_sp     dw 0
 pn_dec      db 0
 pn_n        dw 0
@@ -2450,7 +3302,7 @@ sym_table:
 
 custom_font:
     db 0,0,0,0, 0x81,0x42,0x24,0x18,0x18,0x24,0x42,0x81, 0,0,0,0           ; 0x80 x
-    db 0,0,0,0x10,0x28,0x28,0x44,0x44,0x82,0x82,0xFE,0,0,0,0,0             ; 0x81 delta
+    db 0,0,0,0x10,0x28,0x28,0x44,0x44,0x82,0x82,0xFE,0,0,0,0,0             ; 0x81 de
     db 0,0,0,0x3C,0x42,0x80,0xFC,0x80,0xFC,0x80,0x42,0x3C,0,0,0,0          ; 0x82 euro
     db 0,0,0,0x3C,0x42,0x99,0xA1,0xA1,0x99,0x42,0x3C,0,0,0,0,0             ; 0x83 (c)
     db 0,0,0,0x3C,0x42,0xB9,0xAD,0xB1,0xA9,0x42,0x3C,0,0,0,0,0             ; 0x84 (r)
@@ -2459,8 +3311,16 @@ custom_font:
 argptr      dw 0
 restptr     dw 0
 tmpoff      dw 0
-tmpseg      dw 0
 fs_dir_seg  dw 0
+pl_n        dw 0
+pl_i        dw 0
+rw_lba      dw 0
+rw_fn       db 0
+rw_buf      dw 0
+rel_n       dw 0
+pl_typ      times 252 db 0
+pl_seg      times 252 dw 0
+tmpseg      dw 0
 cur_dir_seg dw 0
 cwd_path    db '/'
             times 63 db 0
@@ -2479,4 +3339,4 @@ pg_heap     dd 0
 numbuf      times 11 db 0
 numend      db 0
 
-times 512 + 9216 - ($ - $$) db 0   
+times 512 + S2_SECT * 512 - ($ - $$) db 0     ; stage2 = S2_SECT sektor
