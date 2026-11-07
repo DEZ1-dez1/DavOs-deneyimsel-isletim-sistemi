@@ -25,7 +25,7 @@
 
 DavOS, x86 mimarisi için Assembly dili kullanılarak sıfırdan geliştirilmiş bir mini işletim sistemidir.
 
-Stage 1 ve Stage 2 aşamalarından oluşan özel önyükleme mimarisi; bellek yönetimi, RAM tabanlı dosya sistemi, x87 FPU destekli hesap makinesi ve etkileşimli komut satırı gibi özelliklerle bir araya gelir.
+Stage 1 ve Stage 2 aşamalarından oluşan özel önyükleme mimarisi.
 
 DavOS'un temel amacı, işletim sistemlerinin çalışma mantığını düşük seviyede incelemek ve temel sistem mekanizmalarını doğrudan Assembly ile uygulamaktır.
 
@@ -34,34 +34,10 @@ DavOS'un temel amacı, işletim sistemlerinin çalışma mantığını düşük 
 <table>
 <tr>
 <td width="50%">
-<h3>⚡ Özel Önyükleyici</h3>
-512 baytlık Stage 1 boot sektöründen başlayarak diskten 9 KB (18 sektör) Stage 2 bileşeninin yüklenmesi.
+       --------------
+       tekrar yazılıcak
+       --------------
 </td>
-<td width="50%">
-<h3>🧠 Bellek Yönetimi</h3>
-BIOS E820 ile bellek haritasının tespiti ve bitmap tabanlı 4 KB bellek sayfalarının ayrılması ve serbest bırakılması.
-</td>
-</tr>
-<tr>
-<td width="50%">
-<h3>📁 RAM Dosya Sistemi</h3>
-Hiyerarşik klasör yapısı, dosya işlemleri ve heap tabanlı bellek kullanımı.
-</td>
-<td width="50%">
-<h3>🔢 x87 FPU Hesap Makinesi</h3>
-Ondalıklı sayılar, parantezler ve temel aritmetik işlemlerle matematiksel hesaplamalar.
-</td>
-</tr>
-<tr>
-<td width="50%">
-<h3>🎨 Özel Sembol Paleti</h3>
-Backtick ( ` ) tuşu veya `SYM` komutuyla π, √, Δ ve € gibi özel karakterlere erişim.
-</td>
-<td width="50%">
-<h3>🖥️ Neofetch Benzeri Arayüz</h3>
-Renkli logo, CPU bilgileri, çalışma süresi ve sistem detaylarını gösteren komut satırı aracı.
-</td>
-</tr>
 </table>
 
 🛠️ Kullanılan Teknolojiler
@@ -105,56 +81,10 @@ qemu-system-i386 -fda davos.img
 
 Limbo PC Emulator kullanıyorsan davos.img dosyasını Floppy (FDA) olarak seçip sanal makineyi başlatabilirsin.
 
-💻 Komut Listesi
+--------------
+yeniden yazılcak
+--------------
 
-DavOS terminalinde local_user$ istemi üzerinden kullanılabilen temel komutlar:
-
-Komut	Açıklama
-help	Kullanılabilir komutları listeler.
-neofetch	Sistem logosunu ve sistem bilgilerini gösterir.
-ram	Boş, kullanılan ve ayrılmış bellek miktarlarını gösterir.
-hesap	x87 FPU tabanlı hesap makinesini başlatır.
-ls	Dosya ve klasörleri listeler.
-mkdir	Yeni bir klasör oluşturur.
-cd	Geçerli klasörü değiştirir.
-pwd	Geçerli klasörün yolunu gösterir.
-write	Dosyaya yazma işlemini gerçekleştirir.
-cat	Dosya içeriğini görüntüler.
-rm	Dosya siler.
-alloc	Bellek sayfası ayırır.
-free	Ayrılmış belleği serbest bırakır.
-heap	Heap bellek yönetimi bilgilerini gösterir.
-ver	İşletim sistemi sürümünü gösterir.
-reboot	Sistemi yeniden başlatır.
-halt	Sistemi durdurur.
-💡 Komutların kullanım biçimlerini öğrenmek için DavOS içerisinde help komutunu çalıştırabilirsin.
-🖥️ Sistem Bilgileri
-text
-       ____  
-      |  _ \  
-      | | | |
-      | |_| | 
-      |____/ 
-
-      DavOS - Mini İşletim Sistemi
-      --------------------------------
-      Mimari       : x86
-      Önyükleme    : Stage 1 + Stage 2
-      Bellek       : Bitmap tabanlı sayfalama
-      Dosya Sistemi: RAM tabanlı
-      Hesap Makinesi: x87 FPU
-
-🗺️ Geliştirme Yol Haritası
-Özel Stage 1 ve Stage 2 önyükleme mimarisi
-BIOS E820 bellek haritası tespiti
-Bitmap tabanlı bellek sayfası yönetimi
-RAM tabanlı dosya sistemi
-Hiyerarşik klasör yapısı
-x87 FPU destekli hesap makinesi
-Etkileşimli komut satırı araçları
-Dosya sistemi özelliklerinin genişletilmesi
-Yeni sistem araçlarının eklenmesi
-Hata ayıklama araçlarının geliştirilmesi
 Not: Yol haritasındaki tamamlanmış ve planlanan maddeleri projenin gerçek durumuna göre güncelleyebilirsin.
 📜 Lisans
 
